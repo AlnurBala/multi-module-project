@@ -1,0 +1,106 @@
+import com.bmuschko.gradle.docker.tasks.image.Dockerfile
+import com.bmuschko.gradle.docker.tasks.image.DockerBuildImage
+import com.bmuschko.gradle.docker.tasks.image.DockerPushImage
+
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.2.2'
+    id 'io.spring.dependency-management' version '1.1.4'
+    id 'com.bmuschko.docker-remote-api' version "$dockerVersion" apply false
+}
+
+group = 'az.ingress'
+version = '0.0.1-SNAPSHOT'
+bootJar {
+    enabled = false
+}
+
+jar {
+    enabled = true
+}
+java {
+    sourceCompatibility = '17'
+}
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    compileOnly 'org.projectlombok:lombok'
+    runtimeOnly 'com.mysql:mysql-connector-j'
+    annotationProcessor 'org.projectlombok:lombok'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+def javaProjects = [
+        project(':ms1'),
+        project(':ms2')
+]
+
+configure(javaProjects) {
+    task dockerFile(type: Dockerfile, dependsOn: assemble) {
+        destFile.set(project.file('Dockerfile'))
+        from "alpine:$alpineVersion"
+        runCommand 'apk add --no-cache openjdk17'
+        copyFile "build/libs/${project.name}-0.0.1.jar", '/app/'
+        workingDir '/app/'
+        entryPoint 'java'
+        defaultCommand '-jar', 'app.jar'
+    }
+
+    task buildDocker(type: Exec, dependsOn: assemble) {
+        workingDir project.projectDir
+
+        commandLine 'docker', 'build', '-t', "${dockerRepoUrl}/${project.name}:${version}", '.'
+
+        doLast {
+            println("Creating image: $dockerRepoUrl/${project.name}:$version")
+        }
+    }
+
+    task dockerPush(type: DockerPushImage, dependsOn: buildDocker) {
+
+        registryCredentials.setUsername("$dockerHubUsername")
+        registryCredentials.setPassword("$dockerHubPassword")
+        registryCredentials.setEmail("$dockerHubEmail")
+
+        images.add("$dockerRepoUrl/${project.name}:$version")
+    }
+    task getOldImageTag {
+        description = 'Get the old Docker image tag from the Docker Compose file'
+        doLast {
+            def imageName = "$dockerRepoUrl/${project.name}-image"
+            println imageName
+            def composeFile = file('../docker-compose.yml')
+            def regex = /image:\s+${imageName}:(\S+)/
+            def matcher = composeFile.text =~ regex
+            project.ext.oldDockerTag = matcher ? matcher[0][1] : 'latest'
+            println project.ext.oldDockerTag
+        }
+    }
+}
+
+
+task dockerComposeRun {
+    description = 'Run Docker Compose'
+
+    subprojects { subproject ->
+        dependsOn subproject.tasks.matching { it.name == 'replaceVersionsInComposeFile' }
+    }
+
+    doLast{
+        project.exec {
+            commandLine 'docker', 'compose', 'up', '-d'
+        }
+    }
+
+}

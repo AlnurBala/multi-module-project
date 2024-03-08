@@ -1,0 +1,5 @@
+rootProject.name = 'multi-module-project'
+
+include 'ms2'
+include 'ms1'
+include 'common'
